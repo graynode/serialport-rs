@@ -150,7 +150,7 @@ impl<'a> Stats<'a> {
         self.total() / (self.times.len() as f32)
     }
 
-    /// Provides the maximum transation time
+    /// Provides the maximum transaction time
     fn max(&self) -> f32 {
         self.times
             .iter()
@@ -193,6 +193,16 @@ fn loopback_standard<'a>(
     }
 }
 
+#[rustversion::before(1.63)]
+fn loopback_split<'a>(
+    _port: &mut Box<dyn SerialPort>,
+    _read_stats: &mut Stats<'a>,
+    _write_stats: &mut Stats<'a>,
+) {
+    unimplemented!("requires Rust 1.63 or later");
+}
+
+#[rustversion::since(1.63)]
 fn loopback_split<'a>(
     port: &mut Box<dyn SerialPort>,
     read_stats: &mut Stats<'a>,

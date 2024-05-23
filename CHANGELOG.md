@@ -7,18 +7,46 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Added
+* Added conversions between `DataBits`, `StopBits` types and their numeric representations
+* Added `FromStr` implementation for `FlowControl`
+### Changed
+### Fixed
+* Fixes a bug where `available_ports()` returned disabled devices on Windows.
+  [#144](https://github.com/serialport/serialport-rs/pull/144)
+* Fixes a bug on Windows where the `WriteTotalTimeoutConstant` field hasn't been
+  configured properly when the `set_timeout` method is called.
+  [#124](https://github.com/serialport/serialport-rs/issues/124)
+
+### Removed
+
+## [4.3.0] - 2023-12-11
+
 ### Changed
 
+* Raise MSRV from 1.56.1 to 1.59.0 and Rust edition from 2018 to 2021.
+  [#137](https://github.com/serialport/serialport-rs/pull/137)
 * Update `bitflags` dependency to 2.4.0.
   [#127](https://github.com/serialport/serialport-rs/pull/127)
+* Open serial devices with `O_CLOEXEC` (Posix). This will close the device
+  handles when starting a child process. In particular this means that a serial
+  device can be reopened after making SW update of a Tauri application.
+  [#130](https://github.com/serialport/serialport-rs/pull/130)
+* Prefer USB device manufacturer and model information from the actual USB
+  device over the information from udev's database.
+  [#137](https://github.com/serialport/serialport-rs/pull/137)
 
 ### Fixed
-
+* Fixes a bug on Windows where composite devices would show a incorrect serial
+  number.
+  [#141](https://github.com/serialport/serialport-rs/pull/141)
 * Fixes a bug on Linux without udev where `available_ports()` returned wrong
   device file paths.
   [#122](https://github.com/serialport/serialport-rs/pull/122)
-
-### Removed
+* Fixes a bug on Windows where some USB device serial numbers were truncated.
+  [#131](https://github.com/serialport/serialport-rs/pull/131)
+* Switches to maintained sys crates for CoreFoundation and IOKit on macOS.
+  [#112](https://github.com/serialport/serialport-rs/issues/112),
+  [#136](https://github.com/serialport/serialport-rs/pull/136)
 
 ## [4.2.2] - 2023-08-03
 ### Fixed
@@ -56,7 +84,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   [#68](https://github.com/serialport/serialport-rs/pull/68)
 * A number of memory leaks have been addressed when using serialport-rs.
   [#98](https://github.com/serialport/serialport-rs/pull/98)
-### Removed
 
 ## [4.2.0] - 2022-06-02
 ### Added
@@ -75,7 +102,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 * Set port timeout to a non-zero value before performing loopback test.
   [#45](https://github.com/serialport/serialport-rs/pull/45)
-### Removed
 
 ## [4.1.0] - 2022-04-04
 ### Added
@@ -94,17 +120,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 * Make sure fd is properly closed if initialization fails.
   [#39](https://github.com/serialport/serialport-rs/pull/39)
   [#41](https://github.com/serialport/serialport-rs/pull/41)
-### Removed
 
 ## [4.0.1] - 2021-04-17
-### Added
 ### Changed
 * Update maintenance status to looking for a new maintainer.
 ### Fixed
 * Properly initialize DCB structure on Windows. This fixes some non-functional
   devices.
   [!97](https://gitlab.com/susurrus/serialport-rs/-/merge_requests/97)
-### Removed
 
 ## [4.0.0] - 2020-12-17
 ### Added
@@ -163,8 +186,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 * Upgraded `sparc64-unknown-linux-gnu` to Tier 2 support.
-
-### Removed
 
 ## [3.2.0] - 2019-01-01
 ### Added
@@ -363,7 +384,8 @@ Unreleased, happened due to a user error using `cargo-release`.
 * Initial release.
 
 
-[Unreleased]: https://github.com/serialport/serialport-rs/compare/v4.2.2...HEAD
+[Unreleased]: https://github.com/serialport/serialport-rs/compare/v4.3.0...HEAD
+[4.3.0]: https://github.com/serialport/serialport-rs/compare/v4.2.2...v4.3.0
 [4.2.2]: https://github.com/serialport/serialport-rs/compare/v4.2.1...v4.2.2
 [4.2.1]: https://github.com/serialport/serialport-rs/compare/v4.2.0...v4.2.1
 [4.2.0]: https://github.com/serialport/serialport-rs/compare/v4.1.0...v4.2.0

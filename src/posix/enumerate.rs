@@ -1,17 +1,25 @@
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-use nix::libc::{c_char, c_void};
+use cfg_if::cfg_if;
+
 #[cfg(all(target_os = "linux", not(target_env = "musl"), feature = "libudev"))]
 use std::ffi::OsStr;
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-use std::ffi::{CStr, CString};
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-use std::mem::MaybeUninit;
 
-use cfg_if::cfg_if;
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-use CoreFoundation_sys::*;
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-use IOKit_sys::*;
+cfg_if! {
+    if #[cfg(any(target_os = "ios", target_os = "macos"))] {
+        use core_foundation_sys::base::*;
+        use core_foundation_sys::dictionary::*;
+        use core_foundation_sys::number::*;
+        use core_foundation_sys::string::*;
+        use io_kit_sys::*;
+        use io_kit_sys::keys::*;
+        use io_kit_sys::serial::keys::*;
+        use io_kit_sys::types::*;
+        use io_kit_sys::usb::lib::*;
+        use nix::libc::{c_char, c_void};
+        use std::convert::TryInto;
+        use std::ffi::{CStr, CString};
+        use std::mem::MaybeUninit;
+    }
+}
 
 #[cfg(any(
     target_os = "freebsd",
@@ -69,19 +77,57 @@ fn udev_hex_property_as_int<T>(
     }
 }
 
+/// Looks up a property which is provided in two "flavors": Where special charaters and whitespaces
+/// are encoded/escaped and where they are replaced (with underscores). This is for example done
+/// by udev for manufacturer and model information.
+///
+/// See
+/// https://github.com/systemd/systemd/blob/38c258398427d1f497268e615906759025e51ea6/src/udev/udev-builtin-usb_id.c#L432
+/// for details.
+#[cfg(all(target_os = "linux", not(target_env = "musl"), feature = "libudev"))]
+fn udev_property_encoded_or_replaced_as_string(
+    d: &libudev::Device,
+    encoded_key: &str,
+    replaced_key: &str,
+) -> Option<String> {
+    udev_property_as_string(d, encoded_key)
+        .and_then(|s| unescaper::unescape(&s).ok())
+        .or_else(|| udev_property_as_string(d, replaced_key))
+        .map(udev_restore_spaces)
+}
+
+/// Converts the underscores from `udev_replace_whitespace` back to spaces quick and dirtily. We
+/// are ignoring the different types of whitespaces and the substitutions from `udev_replace_chars`
+/// deliberately for keeping a low profile.
+///
+/// See
+/// https://github.com/systemd/systemd/blob/38c258398427d1f497268e615906759025e51ea6/src/shared/udev-util.c#L281
+/// for more details.
+#[cfg(all(target_os = "linux", not(target_env = "musl"), feature = "libudev"))]
+fn udev_restore_spaces(source: String) -> String {
+    source.replace('_', " ")
+}
+
 #[cfg(all(target_os = "linux", not(target_env = "musl"), feature = "libudev"))]
 fn port_type(d: &libudev::Device) -> Result<SerialPortType> {
     match d.property_value("ID_BUS").and_then(OsStr::to_str) {
         Some("usb") => {
             let serial_number = udev_property_as_string(d, "ID_SERIAL_SHORT");
+            // For devices on the USB, udev also provides manufacturer and product information from
+            // its hardware dataase. Use this as a fallback if this information is not provided
+            // from the device itself.
+            let manufacturer =
+                udev_property_encoded_or_replaced_as_string(d, "ID_VENDOR_ENC", "ID_VENDOR")
+                    .or_else(|| udev_property_as_string(d, "ID_VENDOR_FROM_DATABASE"));
+            let product =
+                udev_property_encoded_or_replaced_as_string(d, "ID_MODEL_ENC", "ID_MODEL")
+                    .or_else(|| udev_property_as_string(d, "ID_MODEL_FROM_DATABASE"));
             Ok(SerialPortType::UsbPort(UsbPortInfo {
                 vid: udev_hex_property_as_int(d, "ID_VENDOR_ID", &u16::from_str_radix)?,
                 pid: udev_hex_property_as_int(d, "ID_MODEL_ID", &u16::from_str_radix)?,
                 serial_number,
-                manufacturer: udev_property_as_string(d, "ID_VENDOR_FROM_DATABASE")
-                    .or_else(|| udev_property_as_string(d, "ID_VENDOR")),
-                product: udev_property_as_string(d, "ID_MODEL_FROM_DATABASE")
-                    .or_else(|| udev_property_as_string(d, "ID_MODEL")),
+                manufacturer,
+                product,
                 #[cfg(feature = "usbportinfo-interface")]
                 interface: udev_hex_property_as_int(d, "ID_USB_INTERFACE_NUM", &u8::from_str_radix)
                     .ok(),
@@ -98,12 +144,24 @@ fn port_type(d: &libudev::Device) -> Result<SerialPortType> {
             .into_iter()
             .collect::<Option<Vec<_>>>();
             if usb_properties.is_some() {
+                // For USB devices reported at a PCI bus, there is apparently no fallback
+                // information from udevs hardware database provided.
+                let manufacturer = udev_property_encoded_or_replaced_as_string(
+                    d,
+                    "ID_USB_VENDOR_ENC",
+                    "ID_USB_VENDOR",
+                );
+                let product = udev_property_encoded_or_replaced_as_string(
+                    d,
+                    "ID_USB_MODEL_ENC",
+                    "ID_USB_MODEL",
+                );
                 Ok(SerialPortType::UsbPort(UsbPortInfo {
                     vid: udev_hex_property_as_int(d, "ID_USB_VENDOR_ID", &u16::from_str_radix)?,
                     pid: udev_hex_property_as_int(d, "ID_USB_MODEL_ID", &u16::from_str_radix)?,
                     serial_number: udev_property_as_string(d, "ID_USB_SERIAL_SHORT"),
-                    manufacturer: udev_property_as_string(d, "ID_USB_VENDOR"),
-                    product: udev_property_as_string(d, "ID_USB_MODEL"),
+                    manufacturer,
+                    product,
                     #[cfg(feature = "usbportinfo-interface")]
                     interface: udev_hex_property_as_int(
                         d,
@@ -138,7 +196,7 @@ fn get_parent_device_by_type(
         }
         let mut parent = MaybeUninit::uninit();
         if unsafe {
-            IORegistryEntryGetParentEntry(device, kIOServiceClass(), parent.as_mut_ptr())
+            IORegistryEntryGetParentEntry(device, kIOServiceClass, parent.as_mut_ptr())
                 != KERN_SUCCESS
         } {
             return None;
@@ -224,7 +282,7 @@ fn get_string_property(device_type: io_registry_entry_t, property: &str) -> Opti
         let result = CFStringGetCString(
             container as CFStringRef,
             buf.as_mut_ptr(),
-            buf.capacity() as i64,
+            buf.capacity().try_into().unwrap(),
             kCFStringEncodingUTF8,
         );
         let opt_str = if result != 0 {
@@ -243,7 +301,7 @@ fn get_string_property(device_type: io_registry_entry_t, property: &str) -> Opti
 fn port_type(service: io_object_t) -> SerialPortType {
     let bluetooth_device_class_name = b"IOBluetoothSerialClient\0".as_ptr() as *const c_char;
     let usb_device_class_name = b"IOUSBHostDevice\0".as_ptr() as *const c_char;
-    let legacy_usb_device_class_name = kIOUSBDeviceClassName();
+    let legacy_usb_device_class_name = kIOUSBDeviceClassName;
 
     let maybe_usb_device = get_parent_device_by_type(service, usb_device_class_name)
         .or_else(|| get_parent_device_by_type(service, legacy_usb_device_class_name));
@@ -284,7 +342,7 @@ cfg_if! {
             let mut vec = Vec::new();
             unsafe {
                 // Create a dictionary for specifying the search terms against the IOService
-                let classes_to_match = IOServiceMatching(kIOSerialBSDServiceValue());
+                let classes_to_match = IOServiceMatching(kIOSerialBSDServiceValue);
                 if classes_to_match.is_null() {
                     return Err(Error::new(
                         ErrorKind::Unknown,
@@ -299,7 +357,7 @@ cfg_if! {
                 // searching for serial devices matching the RS232 device type.
                 let key = CFStringCreateWithCString(
                     kCFAllocatorDefault,
-                    kIOSerialBSDTypeKey(),
+                    kIOSerialBSDTypeKey,
                     kCFStringEncodingUTF8,
                 );
                 if key.is_null() {
@@ -314,7 +372,7 @@ cfg_if! {
 
                 let value = CFStringCreateWithCString(
                     kCFAllocatorDefault,
-                    kIOSerialBSDAllTypes(),
+                    kIOSerialBSDAllTypes,
                     kCFStringEncodingUTF8,
                 );
                 if value.is_null() {
@@ -382,38 +440,39 @@ cfg_if! {
 
                     if result == KERN_SUCCESS {
                         for key in ["IOCalloutDevice", "IODialinDevice"].iter() {
-                            let key = CString::new(*key).unwrap();
+                            let key_cstring = CString::new(*key).unwrap();
                             let key_cfstring = CFStringCreateWithCString(
                                 kCFAllocatorDefault,
-                                key.as_ptr(),
+                                key_cstring.as_ptr(),
                                 kCFStringEncodingUTF8,
                             );
                             let _key_cfstring_guard = scopeguard::guard((), |_| {
                                 CFRelease(key_cfstring as *const c_void);
                             });
 
-                            let value = CFDictionaryGetValue(props.assume_init(), key_cfstring as *const c_void);
+                            let mut value = std::ptr::null();
+                            let found = CFDictionaryGetValueIfPresent(props.assume_init(), key_cfstring as *const c_void, &mut value);
+                            if found == true as Boolean {
+                                let type_id = CFGetTypeID(value);
+                                if type_id == CFStringGetTypeID() {
+                                    let mut buf = Vec::with_capacity(256);
 
-                            let type_id = CFGetTypeID(value);
-                            if type_id == CFStringGetTypeID() {
-                                let mut buf = Vec::with_capacity(256);
-
-                                CFStringGetCString(
-                                    value as CFStringRef,
-                                    buf.as_mut_ptr(),
-                                    256,
-                                    kCFStringEncodingUTF8,
-                                );
-                                let path = CStr::from_ptr(buf.as_ptr()).to_string_lossy();
-                                vec.push(SerialPortInfo {
-                                    port_name: path.to_string(),
-                                    port_type: port_type(modem_service),
-                                });
+                                    CFStringGetCString(
+                                        value as CFStringRef,
+                                        buf.as_mut_ptr(),
+                                        buf.capacity() as isize,
+                                        kCFStringEncodingUTF8,
+                                    );
+                                    let path = CStr::from_ptr(buf.as_ptr()).to_string_lossy();
+                                    vec.push(SerialPortInfo {
+                                        port_name: path.to_string(),
+                                        port_type: port_type(modem_service),
+                                    });
+                                } else {
+                                    return Err(Error::new(ErrorKind::Unknown, "Found invalid type for TypeID"));
+                                }
                             } else {
-                                return Err(Error::new(
-                                    ErrorKind::Unknown,
-                                    "Found invalid type for TypeID",
-                                ));
+                                return Err(Error::new(ErrorKind::Unknown, format!("Key {} missing in dict", key)));
                             }
                         }
                     } else {

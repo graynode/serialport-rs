@@ -5,7 +5,7 @@ use std::time::Duration;
 use std::{io, mem};
 
 use nix::fcntl::{fcntl, OFlag};
-use nix::{self, libc, unistd};
+use nix::{libc, unistd};
 
 use crate::posix::ioctl::{self, SerialLines};
 use crate::posix::termios;
@@ -33,10 +33,14 @@ fn close(fd: RawFd) {
 
 /// A serial port implementation for POSIX TTY ports
 ///
-/// The port will be closed when the value is dropped. However, this struct
-/// should not be instantiated directly by using `TTYPort::open()`, instead use
-/// the cross-platform `serialport::open()` or
-/// `serialport::open_with_settings()`.
+/// The port will be closed when the value is dropped. This struct
+/// should not be instantiated directly by using `TTYPort::open()`.
+/// Instead, use the cross-platform `serialport::new()`. Example:
+///
+/// ```no_run
+/// let mut port = serialport::new("/dev/ttyS0", 115200).open().expect("Unable to open");
+/// # let _ = &mut port;
+/// ```
 ///
 /// Note: on macOS, when connecting to a pseudo-terminal (`pty` opened via
 /// `posix_openpt`), the `baud_rate` should be set to 0; this will be used to
@@ -46,11 +50,12 @@ fn close(fd: RawFd) {
 /// ```
 /// use serialport::{TTYPort, SerialPort};
 ///
-/// let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
-///
+/// let (mut master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
+/// # let _ = &mut master;
+/// # let _ = &mut slave;
 /// // ... elsewhere
-///
-/// let mut port = TTYPort::open(&serialport::new(slave.name().unwrap(), 0)).expect("unable to open");
+/// let mut port = TTYPort::open(&serialport::new(slave.name().unwrap(), 0)).expect("Unable to open");
+/// # let _ = &mut port;
 /// ```
 #[derive(Debug)]
 pub struct TTYPort {
@@ -96,7 +101,7 @@ impl TTYPort {
     ///
     /// `path` should be the path to a TTY device, e.g., `/dev/ttyS0`.
     ///
-    /// Ports are opened in exclusive mode by default. If this is undesireable
+    /// Ports are opened in exclusive mode by default. If this is undesirable
     /// behavior, use `TTYPort::set_exclusive(false)`.
     ///
     /// If the port settings differ from the default settings, characters received
@@ -116,7 +121,7 @@ impl TTYPort {
         let path = Path::new(&builder.path);
         let fd = OwnedFd(nix::fcntl::open(
             path,
-            OFlag::O_RDWR | OFlag::O_NOCTTY | OFlag::O_NONBLOCK,
+            OFlag::O_RDWR | OFlag::O_NOCTTY | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
             nix::sys::stat::Mode::empty(),
         )?);
 
@@ -155,6 +160,11 @@ impl TTYPort {
                 "Settings did not apply correctly",
             ));
         };
+
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        if builder.baud_rate > 0 {
+            unsafe { libc::tcflush(fd.0, libc::TCIOFLUSH) };
+        }
 
         // clear O_NONBLOCK flag
         fcntl(fd.0, F_SETFL(nix::fcntl::OFlag::empty()))?;
@@ -242,7 +252,10 @@ impl TTYPort {
     /// ```
     /// use serialport::TTYPort;
     ///
-    /// let (master, slave) = TTYPort::pair().unwrap();
+    /// let (mut master, mut slave) = TTYPort::pair().unwrap();
+    ///
+    /// # let _ = &mut master;
+    /// # let _ = &mut slave;
     /// ```
     pub fn pair() -> Result<(Self, Self)> {
         // Open the next free pty.
@@ -344,7 +357,7 @@ impl TTYPort {
     ///
     /// This function returns an error if the serial port couldn't be cloned.
     pub fn try_clone_native(&self) -> Result<TTYPort> {
-        let fd_cloned: i32 = fcntl(self.fd, nix::fcntl::F_DUPFD(self.fd))?;
+        let fd_cloned: i32 = fcntl(self.fd, nix::fcntl::F_DUPFD_CLOEXEC(self.fd))?;
         Ok(TTYPort {
             fd: fd_cloned,
             exclusive: self.exclusive,
@@ -466,7 +479,7 @@ impl SerialPort for TTYPort {
     /// On some platforms this will be the actual device baud rate, which may differ from the
     /// desired baud rate.
     #[cfg(any(
-        target_os = "dragonflybsd",
+        target_os = "dragonfly",
         target_os = "freebsd",
         target_os = "netbsd",
         target_os = "openbsd"
@@ -609,7 +622,7 @@ impl SerialPort for TTYPort {
 
     #[cfg(any(
         target_os = "android",
-        target_os = "dragonflybsd",
+        target_os = "dragonfly",
         target_os = "freebsd",
         target_os = "netbsd",
         target_os = "openbsd",

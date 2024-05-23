@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::{mem, ptr};
 
@@ -5,6 +6,7 @@ use regex::Regex;
 use winapi::shared::guiddef::*;
 use winapi::shared::minwindef::*;
 use winapi::shared::winerror::*;
+use winapi::um::cfgmgr32::*;
 use winapi::um::cguid::GUID_NULL;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::setupapi::*;
@@ -13,65 +15,55 @@ use winapi::um::winreg::*;
 
 use crate::{Error, ErrorKind, Result, SerialPortInfo, SerialPortType, UsbPortInfo};
 
-// According to the MSDN docs, we should use SetupDiGetClassDevs, SetupDiEnumDeviceInfo
-// and SetupDiGetDeviceInstanceId in order to enumerate devices.
-// https://msdn.microsoft.com/en-us/windows/hardware/drivers/install/enumerating-installed-devices
-//
-// SetupDiGetClassDevs returns the devices associated with a particular class of devices.
-// We want the list of devices which shows up in the Device Manager as "Ports (COM & LPT)"
-// which is otherwise known as the "Ports" class.
-//
-// get_pots_guids returns all of the classes (guids) associated with the name "Ports".
+/// According to the MSDN docs, we should use SetupDiGetClassDevs, SetupDiEnumDeviceInfo
+/// and SetupDiGetDeviceInstanceId in order to enumerate devices.
+/// https://msdn.microsoft.com/en-us/windows/hardware/drivers/install/enumerating-installed-devices
 fn get_ports_guids() -> Result<Vec<GUID>> {
-    // Note; unwrap can't fail, since "Ports" is valid UTF-8.
-    let ports_class_name = CString::new("Ports").unwrap();
-
-    // Size vector to hold 1 result (which is the most common result).
-    let mut num_guids: DWORD = 0;
+    // SetupDiGetClassDevs returns the devices associated with a particular class of devices.
+    // We want the list of devices which are listed as COM ports (generally those that show up in the
+    // Device Manager as "Ports (COM & LPT)" which is otherwise known as the "Ports" class).
+    //
+    // The list of system defined classes can be found here:
+    // https://learn.microsoft.com/en-us/windows-hardware/drivers/install/system-defined-device-setup-classes-available-to-vendors
+    let class_names = [
+        // Note; since names are valid UTF-8, unwrap can't fail
+        CString::new("Ports").unwrap(),
+        CString::new("Modem").unwrap(),
+    ];
     let mut guids: Vec<GUID> = Vec::new();
-    guids.push(GUID_NULL); // Placeholder for first result
+    for class_name in class_names {
+        let mut num_guids: DWORD = 1; // Initially assume that there is only 1 guid per name.
+        let class_start_idx = guids.len(); // start idx for this name (for potential resize with multiple guids)
 
-    // Find out how many GUIDs are associated with "Ports". Initially we assume
-    // that there is only 1. num_guids will tell us how many there actually are.
-    let res = unsafe {
-        SetupDiClassGuidsFromNameA(
-            ports_class_name.as_ptr(),
-            guids.as_mut_ptr(),
-            guids.len() as DWORD,
-            &mut num_guids,
-        )
-    };
-    if res == FALSE {
-        return Err(Error::new(
-            ErrorKind::Unknown,
-            "Unable to determine number of Ports GUIDs",
-        ));
-    }
-    if num_guids == 0 {
-        // We got a successful result of no GUIDs, so pop the placeholder that
-        // we created before.
-        guids.pop();
-    }
-
-    if num_guids as usize > guids.len() {
-        // It turns out we needed more that one slot. num_guids will contain the number of slots
-        // that we actually need, so go ahead and expand the vector to the correct size.
-        while guids.len() < num_guids as usize {
-            guids.push(GUID_NULL);
-        }
-        let res = unsafe {
-            SetupDiClassGuidsFromNameA(
-                ports_class_name.as_ptr(),
-                guids.as_mut_ptr(),
-                guids.len() as DWORD,
-                &mut num_guids,
-            )
-        };
-        if res == FALSE {
-            return Err(Error::new(
-                ErrorKind::Unknown,
-                "Unable to retrieve Ports GUIDs",
-            ));
+        // first attempt with size == 1, second with the size returned from the first try
+        for _ in 0..2 {
+            guids.resize(class_start_idx + num_guids as usize, GUID_NULL);
+            let guid_buffer = &mut guids[class_start_idx..];
+            // Find out how many GUIDs are associated with this class name.  num_guids will tell us how many there actually are.
+            let res = unsafe {
+                SetupDiClassGuidsFromNameA(
+                    class_name.as_ptr(),
+                    guid_buffer.as_mut_ptr(),
+                    guid_buffer.len() as DWORD,
+                    &mut num_guids,
+                )
+            };
+            if res == FALSE {
+                return Err(Error::new(
+                    ErrorKind::Unknown,
+                    "Unable to determine number of Ports GUIDs",
+                ));
+            }
+            let len_cmp = guid_buffer.len().cmp(&(num_guids as usize));
+            // under allocated
+            if len_cmp == std::cmp::Ordering::Less {
+                continue; // retry
+            }
+            // allocation > required len
+            else if len_cmp == std::cmp::Ordering::Greater {
+                guids.truncate(class_start_idx + num_guids as usize);
+            }
+            break; // next name
         }
     }
     Ok(guids)
@@ -84,12 +76,16 @@ fn get_ports_guids() -> Result<Vec<GUID>> {
 /// and product names cannot be determined from the HWID string, so those are
 /// set as None.
 ///
+/// For composite USB devices, the HWID string will be for the interface. In
+/// this case, the parent HWID string must be provided so that the correct
+/// serial number can be determined.
+///
 /// Some HWID examples are:
 ///   - MicroPython pyboard:    USB\VID_F055&PID_9802\385435603432
 ///   - BlackMagic GDB Server:  USB\VID_1D50&PID_6018&MI_00\6&A694CA9&0&0000
 ///   - BlackMagic UART port:   USB\VID_1D50&PID_6018&MI_02\6&A694CA9&0&0002
 ///   - FTDI Serial Adapter:    FTDIBUS\VID_0403+PID_6001+A702TB52A\0000
-fn parse_usb_port_info(hardware_id: &str) -> Option<UsbPortInfo> {
+fn parse_usb_port_info(hardware_id: &str, parent_hardware_id: Option<&str>) -> Option<UsbPortInfo> {
     let re = Regex::new(concat!(
         r"VID_(?P<vid>[[:xdigit:]]{4})",
         r"[&+]PID_(?P<pid>[[:xdigit:]]{4})",
@@ -98,18 +94,32 @@ fn parse_usb_port_info(hardware_id: &str) -> Option<UsbPortInfo> {
     ))
     .unwrap();
 
-    let caps = re.captures(hardware_id)?;
+    let mut caps = re.captures(hardware_id)?;
+
+    let interface = caps
+        .name("iid")
+        .and_then(|m| u8::from_str_radix(m.as_str(), 16).ok());
+
+    if interface.is_some() {
+        // If this is a composite device, we need to parse the parent's HWID to get the correct information.
+        caps = re.captures(parent_hardware_id?)?;
+    }
 
     Some(UsbPortInfo {
         vid: u16::from_str_radix(&caps[1], 16).ok()?,
         pid: u16::from_str_radix(&caps[2], 16).ok()?,
-        serial_number: caps.name("serial").map(|m| m.as_str().to_string()),
+        serial_number: caps.name("serial").map(|m| {
+            let m = m.as_str();
+            if m.contains('&') {
+                m.split('&').nth(1).unwrap().to_string()
+            } else {
+                m.to_string()
+            }
+        }),
         manufacturer: None,
         product: None,
         #[cfg(feature = "usbportinfo-interface")]
-        interface: caps
-            .name("iid")
-            .and_then(|m| u8::from_str_radix(m.as_str(), 16).ok()),
+        interface: interface,
     })
 }
 
@@ -176,6 +186,40 @@ struct PortDevice {
 }
 
 impl PortDevice {
+    // Retrieves the device instance id string associated with this device's parent.
+    // This is useful for determining the serial number of a composite USB device.
+    fn parent_instance_id(&mut self) -> Option<String> {
+        let mut result_buf = [0i8; MAX_PATH];
+        let mut parent_device_instance_id = 0;
+
+        let res =
+            unsafe { CM_Get_Parent(&mut parent_device_instance_id, self.devinfo_data.DevInst, 0) };
+        if res == CR_SUCCESS {
+            let res = unsafe {
+                CM_Get_Device_IDA(
+                    parent_device_instance_id,
+                    result_buf.as_mut_ptr(),
+                    (result_buf.len() - 1) as ULONG,
+                    0,
+                )
+            };
+
+            if res == CR_SUCCESS {
+                let end_of_buffer = result_buf.len() - 1;
+                result_buf[end_of_buffer] = 0;
+                Some(unsafe {
+                    CStr::from_ptr(result_buf.as_ptr())
+                        .to_string_lossy()
+                        .into_owned()
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
     // Retrieves the device instance id string associated with this device. Some examples of
     // instance id strings are:
     //  MicroPython Board:  USB\VID_F055&PID_9802\385435603432
@@ -205,6 +249,26 @@ impl PortDevice {
                     .to_string_lossy()
                     .into_owned()
             })
+        }
+    }
+
+    /// Retrieves the problem status of this device. For example, `CM_PROB_DISABLED` indicates
+    /// the device has been disabled in Device Manager.
+    fn problem(&mut self) -> Option<ULONG> {
+        let mut status = 0;
+        let mut problem_number = 0;
+        let res = unsafe {
+            CM_Get_DevNode_Status(
+                &mut status,
+                &mut problem_number,
+                self.devinfo_data.DevInst,
+                0,
+            )
+        };
+        if res == CR_SUCCESS {
+            Some(problem_number)
+        } else {
+            None
         }
     }
 
@@ -247,8 +311,9 @@ impl PortDevice {
     // Determines the port_type for this device, and if it's a USB port populate the various fields.
     pub fn port_type(&mut self) -> SerialPortType {
         self.instance_id()
-            .and_then(|s| parse_usb_port_info(&s))
-            .map(|mut info| {
+            .map(|s| (s, self.parent_instance_id())) // Get parent instance id if it exists.
+            .and_then(|(d, p)| parse_usb_port_info(&d, p.as_deref()))
+            .map(|mut info: UsbPortInfo| {
                 info.manufacturer = self.property(SPDRP_MFG);
                 info.product = self.property(SPDRP_FRIENDLYNAME);
                 SerialPortType::UsbPort(info)
@@ -273,10 +338,8 @@ impl PortDevice {
             )
         };
 
-        if res == FALSE {
-            if unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
-                return None;
-            }
+        if res == FALSE && unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+            return None;
         }
 
         // Using the unicode version of 'SetupDiGetDeviceRegistryProperty' seems to report the
@@ -290,12 +353,103 @@ impl PortDevice {
     }
 }
 
+/// Not all COM ports are listed under the "Ports" device class
+/// The full list of COM ports is available from the registry at
+/// HKEY_LOCAL_MACHINE\HARDWARE\DEVICEMAP\SERIALCOMM
+///
+/// port of https://learn.microsoft.com/en-us/windows/win32/sysinfo/enumerating-registry-subkeys
+fn get_registry_com_ports() -> HashSet<String> {
+    let mut ports_list = HashSet::new();
+
+    let reg_key = b"HARDWARE\\DEVICEMAP\\SERIALCOMM\0";
+    let key_ptr = reg_key.as_ptr() as *const i8;
+    let mut ports_key = std::ptr::null_mut();
+
+    // SAFETY: ffi, all inputs are correct
+    let open_res =
+        unsafe { RegOpenKeyExA(HKEY_LOCAL_MACHINE, key_ptr, 0, KEY_READ, &mut ports_key) };
+    if SUCCEEDED(open_res) {
+        let mut class_name_buff = [0i8; MAX_PATH];
+        let mut class_name_size = MAX_PATH as u32;
+        let mut sub_key_count = 0;
+        let mut largest_sub_key = 0;
+        let mut largest_class_string = 0;
+        let mut num_key_values = 0;
+        let mut longest_value_name = 0;
+        let mut longest_value_data = 0;
+        let mut size_security_desc = 0;
+        let mut last_write_time = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        // SAFETY: ffi, all inputs are correct
+        let query_res = unsafe {
+            RegQueryInfoKeyA(
+                ports_key,
+                class_name_buff.as_mut_ptr(),
+                &mut class_name_size,
+                std::ptr::null_mut(),
+                &mut sub_key_count,
+                &mut largest_sub_key,
+                &mut largest_class_string,
+                &mut num_key_values,
+                &mut longest_value_name,
+                &mut longest_value_data,
+                &mut size_security_desc,
+                &mut last_write_time,
+            )
+        };
+        if SUCCEEDED(query_res) {
+            for idx in 0..num_key_values {
+                let mut val_name_buff = [0i8; MAX_PATH];
+                let mut val_name_size = MAX_PATH as u32;
+                let mut value_type = 0;
+                // if 100 chars is not enough for COM<number> something is very wrong
+                let mut val_data = [0; 100];
+                let mut data_size = val_data.len() as u32;
+                // SAFETY: ffi, all inputs are correct
+                let res = unsafe {
+                    RegEnumValueA(
+                        ports_key,
+                        idx,
+                        val_name_buff.as_mut_ptr(),
+                        &mut val_name_size,
+                        std::ptr::null_mut(),
+                        &mut value_type,
+                        val_data.as_mut_ptr(),
+                        &mut data_size,
+                    )
+                };
+                if FAILED(res) || val_data.len() < data_size as usize {
+                    break;
+                }
+                // SAFETY: data_size is checked and pointer is valid
+                let val_data = CStr::from_bytes_with_nul(unsafe {
+                    std::slice::from_raw_parts(val_data.as_ptr(), data_size as usize)
+                });
+
+                if let Ok(port) = val_data {
+                    ports_list.insert(port.to_string_lossy().into_owned());
+                }
+            }
+        }
+        // SAFETY: ffi, all inputs are correct
+        unsafe { RegCloseKey(ports_key) };
+    }
+    ports_list
+}
+
 /// List available serial ports on the system.
 pub fn available_ports() -> Result<Vec<SerialPortInfo>> {
     let mut ports = Vec::new();
     for guid in get_ports_guids()? {
         let port_devices = PortDevices::new(&guid);
         for mut port_device in port_devices {
+            // Ignore nonfunctional devices
+            if port_device.problem() != Some(0) {
+                continue;
+            }
+
             let port_name = port_device.name();
 
             debug_assert!(
@@ -310,9 +464,24 @@ pub fn available_ports() -> Result<Vec<SerialPortInfo>> {
             }
 
             ports.push(SerialPortInfo {
-                port_name: port_name,
+                port_name,
                 port_type: port_device.port_type(),
             });
+        }
+    }
+    // ports identified through the registry have no additional information
+    let mut raw_ports_set = get_registry_com_ports();
+    if raw_ports_set.len() > ports.len() {
+        // remove any duplicates. HashSet makes this relatively cheap
+        for port in ports.iter() {
+            raw_ports_set.remove(&port.port_name);
+        }
+        // add remaining ports as "unknown" type
+        for raw_port in raw_ports_set {
+            ports.push(SerialPortInfo {
+                port_name: raw_port,
+                port_type: SerialPortType::Unknown,
+            })
         }
     }
     Ok(ports)
@@ -321,17 +490,17 @@ pub fn available_ports() -> Result<Vec<SerialPortInfo>> {
 #[test]
 fn test_parsing_usb_port_information() {
     let bm_uart_hwid = r"USB\VID_1D50&PID_6018&MI_02\6&A694CA9&0&0000";
-    let info = parse_usb_port_info(bm_uart_hwid).unwrap();
+    let bm_parent_hwid = r"USB\VID_1D50&PID_6018\85A12F01";
+    let info = parse_usb_port_info(bm_uart_hwid, Some(bm_parent_hwid)).unwrap();
 
     assert_eq!(info.vid, 0x1D50);
     assert_eq!(info.pid, 0x6018);
-    // FIXME: The 'serial number' as reported by the HWID likely needs some review
-    assert_eq!(info.serial_number, Some("6".to_string()));
+    assert_eq!(info.serial_number, Some("85A12F01".to_string()));
     #[cfg(feature = "usbportinfo-interface")]
     assert_eq!(info.interface, Some(2));
 
     let ftdi_serial_hwid = r"FTDIBUS\VID_0403+PID_6001+A702TB52A\0000";
-    let info = parse_usb_port_info(ftdi_serial_hwid).unwrap();
+    let info = parse_usb_port_info(ftdi_serial_hwid, None).unwrap();
 
     assert_eq!(info.vid, 0x0403);
     assert_eq!(info.pid, 0x6001);
@@ -340,7 +509,7 @@ fn test_parsing_usb_port_information() {
     assert_eq!(info.interface, None);
 
     let pyboard_hwid = r"USB\VID_F055&PID_9802\385435603432";
-    let info = parse_usb_port_info(pyboard_hwid).unwrap();
+    let info = parse_usb_port_info(pyboard_hwid, None).unwrap();
 
     assert_eq!(info.vid, 0xF055);
     assert_eq!(info.pid, 0x9802);

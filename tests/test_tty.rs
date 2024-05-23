@@ -98,7 +98,7 @@ fn test_osx_pty_pair() {
     let (output_sink, output_stream) = std::sync::mpsc::sync_channel(1);
     let name = slave.name().unwrap();
 
-    master.write("12".as_bytes()).expect("");
+    master.write_all("12".as_bytes()).expect("");
 
     let reader_thread = std::thread::spawn(move || {
         let mut port = TTYPort::open(&serialport::new(&name, 0)).expect("unable to open");
@@ -114,7 +114,7 @@ fn test_osx_pty_pair() {
 }
 
 // On Mac this should work (in fact used to in b77768a) but now fails. It's not functionality that
-// should be required, and the ptys work otherwise. So going to just diable this test instead.
+// should be required, and the ptys work otherwise. So going to just disable this test instead.
 #[test]
 #[cfg_attr(any(target_os = "ios", target_os = "macos"), ignore)]
 fn test_ttyport_set_standard_baud() {

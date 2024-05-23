@@ -11,7 +11,7 @@
 //! with ports. The `SerialPort::new().open*()` and `available_ports()` functions in the root
 //! provide cross-platform functionality.
 //!
-//! For platform-specific functionaly, this crate is split into a `posix` and `windows` API with
+//! For platform-specific functionality, this crate is split into a `posix` and `windows` API with
 //! corresponding `TTYPort` and `COMPort` structs (that both implement the `SerialPort` trait).
 //! Using the platform-specific `SerialPort::new().open*()` functions will return the
 //! platform-specific port object which allows access to platform-specific functionality.
@@ -19,8 +19,7 @@
 #![deny(
     missing_docs,
     missing_debug_implementations,
-    missing_copy_implementations,
-    unused
+    missing_copy_implementations
 )]
 // Document feature-gated elements on docs.rs. See
 // https://doc.rust-lang.org/rustdoc/unstable-features.html?highlight=doc(cfg#doccfg-recording-what-platforms-or-features-are-required-for-code-to-be-present
@@ -32,10 +31,10 @@
 // doc tests.
 #![doc(test(attr(allow(unused_must_use))))]
 
-use std::convert::From;
 use std::error::Error as StdError;
 use std::fmt;
 use std::io;
+use std::str::FromStr;
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -160,6 +159,31 @@ impl fmt::Display for DataBits {
     }
 }
 
+impl From<DataBits> for u8 {
+    fn from(value: DataBits) -> Self {
+        match value {
+            DataBits::Five => 5,
+            DataBits::Six => 6,
+            DataBits::Seven => 7,
+            DataBits::Eight => 8,
+        }
+    }
+}
+
+impl TryFrom<u8> for DataBits {
+    type Error = ();
+
+    fn try_from(value: u8) -> core::result::Result<Self, Self::Error> {
+        match value {
+            5 => Ok(Self::Five),
+            6 => Ok(Self::Six),
+            7 => Ok(Self::Seven),
+            8 => Ok(Self::Eight),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Parity checking modes
 ///
 /// When parity checking is enabled (`Odd` or `Even`) an extra bit is transmitted with
@@ -214,6 +238,27 @@ impl fmt::Display for StopBits {
     }
 }
 
+impl From<StopBits> for u8 {
+    fn from(value: StopBits) -> Self {
+        match value {
+            StopBits::One => 1,
+            StopBits::Two => 2,
+        }
+    }
+}
+
+impl TryFrom<u8> for StopBits {
+    type Error = ();
+
+    fn try_from(value: u8) -> core::result::Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::One),
+            2 => Ok(Self::Two),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Flow control modes
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -234,6 +279,19 @@ impl fmt::Display for FlowControl {
             FlowControl::None => write!(f, "None"),
             FlowControl::Software => write!(f, "Software"),
             FlowControl::Hardware => write!(f, "Hardware"),
+        }
+    }
+}
+
+impl FromStr for FlowControl {
+    type Err = ();
+
+    fn from_str(s: &str) -> core::result::Result<Self, Self::Err> {
+        match s {
+            "None" | "none" | "n" => Ok(FlowControl::None),
+            "Software" | "software" | "SW" | "sw" | "s" => Ok(FlowControl::Software),
+            "Hardware" | "hardware" | "HW" | "hw" | "h" => Ok(FlowControl::Hardware),
+            _ => Err(()),
         }
     }
 }
@@ -273,6 +331,8 @@ pub struct SerialPortBuilder {
 
 impl SerialPortBuilder {
     /// Set the path to the serial port
+    // TODO: Switch to `clone_into` when bumping our MSRV past 1.63 and remove this exemption.
+    #[allow(clippy::assigning_clones)]
     #[must_use]
     pub fn path<'a>(mut self, path: impl Into<std::borrow::Cow<'a, str>>) -> Self {
         self.path = path.into().as_ref().to_owned();
@@ -548,7 +608,7 @@ pub trait SerialPort: Send + io::Read + io::Write {
     /// should look at [mio-serial](https://crates.io/crates/mio-serial) or
     /// [tokio-serial](https://crates.io/crates/tokio-serial).
     ///
-    /// Also, you must be very carefull when changing the settings of a cloned `SerialPort` : since
+    /// Also, you must be very careful when changing the settings of a cloned `SerialPort` : since
     /// the settings are cached on a per object basis, trying to modify them from two different
     /// objects can cause some nasty behavior.
     ///

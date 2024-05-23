@@ -1,19 +1,7 @@
 [![crates.io version badge](https://img.shields.io/crates/v/serialport.svg)](https://crates.io/crates/serialport)
 [![Documentation](https://docs.rs/serialport/badge.svg)](https://docs.rs/serialport)
 [![GitHub workflow status](https://img.shields.io/github/actions/workflow/status/serialport/serialport-rs/ci.yaml?branch=main&logo=github)](https://github.com/serialport/serialport-rs/actions)
-[![Minimum Stable Rust Version](https://img.shields.io/badge/Rust-1.56.1-blue?logo=rust)](https://blog.rust-lang.org/2021/11/01/Rust-1.56.1.html)
-
-> **Note:** This is a fork of the original
-[serialport-rs](https://gitlab.com/susurrus/serialport-rs) project on GitLab. Please note there have
-been some changes to both the supported targets and which tier some targets are in, and there may be
-further changes to this made. Additionally, all relevant issues have been migrated to this
-repository.
-
-Join the discussion on Matrix!
-[#serialport-rs:matrix.org](https://matrix.to/#/#serialport-rs:matrix.org)
-
-**This project is looking for maintainers! If you are interested please let us know on Matrix, or by
-[creating a discussion](https://github.com/serialport/serialport-rs/discussions/new).**
+[![Minimum Stable Rust Version](https://img.shields.io/badge/Rust-1.59.0-blue?logo=rust)](https://blog.rust-lang.org/2022/02/24/Rust-1.59.0.html)
 
 # Introduction
 
@@ -22,6 +10,13 @@ blocking I/O interface and port enumeration on POSIX and Windows systems.
 
 For async I/O functionality, see the [mio-serial](https://github.com/berkowski/mio-serial) and
 [tokio-serial](https://github.com/berkowski/tokio-serial) crates.
+
+Join the discussion on Matrix!
+[#serialport-rs:matrix.org](https://matrix.to/#/#serialport-rs:matrix.org)
+
+**This project is looking for maintainers! Especially for Windows. If you are interested please let
+us know on Matrix, or by [creating a
+discussion](https://github.com/serialport/serialport-rs/discussions/new).**
 
 # Overview
 
@@ -109,7 +104,8 @@ can help debug software or hardware errors.
 
 # Dependencies
 
-Rust versions 1.56.1 and higher are supported.
+Rust versions 1.59.0 and higher are supported by the library itself. There are
+examples requiring newer versions of Rust.
 
 For GNU/Linux `pkg-config` headers are required:
 
@@ -126,9 +122,10 @@ feature):
 
 # Platform Support
 
-Builds and tests for all supported targets are run in CI. Failures of either block the inclusion of
-new code. This library should be compatible with additional targets not listed below, but no
-guarantees are made. Additional platforms may be added in the future if there is a need and/or
+Builds and some tests (not requiring actual hardware) for major targets are run
+in CI. Failures of either block the inclusion of new code. This library should
+be compatible with additional targets not listed below, but no guarantees are
+made. Additional platforms may be added in the future if there is a need and/or
 demand.
 
 - Android
@@ -182,8 +179,8 @@ without any additional terms or conditions.
 
 # Acknowledgments
 
+This is the continuation of the development at <https://gitlab.com/susurrus/serialport-rs>. Thanks
+to susurrus and all other contributors to the original project on GitLab.
+
 Special thanks to dcuddeback, willem66745, and apoloval who wrote the original serial-rs library
 which this library heavily borrows from.
-
-Additional thanks to susurrus and all other contributors to the original
-[serialport-rs](https://gitlab.com/susurrus/serialport-rs) project on GitLab.

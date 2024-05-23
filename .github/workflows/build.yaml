@@ -18,6 +18,9 @@ on:
       toolchain:
         default: stable
         type: string
+      continue-on-error:
+        default: false
+        type: boolean
 
 env:
   # While we could define these on a per-job basis, there's no harm in simply
@@ -46,10 +49,13 @@ env:
   CARGO_TERM_COLOR: always
   # Enable cross compilation for `pkg_config`.
   PKG_CONFIG_ALLOW_CROSS: 1
+  # Deny warnings.
+  RUSTFLAGS: -D warnings
 
 jobs:
   build:
     runs-on: ${{ inputs.runs_on }}
+    continue-on-error: ${{ inputs.continue-on-error }}
     steps:
       - name: Build | install dependencies
         if: inputs.runs_on == 'ubuntu-latest'
@@ -68,27 +74,19 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Build | install toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
           target: ${{ inputs.target }}
           toolchain: ${{ inputs.toolchain }}
-          default: true
 
       - name: Build | rust-cache
-        uses: Swatinem/rust-cache@v1
+        uses: Swatinem/rust-cache@v2
 
       - name: Build | build library (default features)
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --target=${{ inputs.target }}
+        run: cargo build --target=${{ inputs.target }}
 
       - name: Build | build library (all features)
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --all-features --target=${{ inputs.target }}
+        run: cargo build --all-features --target=${{ inputs.target }}
 
       - name: Build | build examples (default features)
         if: ${{ inputs.disable_extra_builds == false }}
@@ -104,7 +102,7 @@ jobs:
 
       - name: Build | run tests (default features)
         if: ${{ inputs.disable_tests == false }}
-        run: cargo test --no-fail-fast --target=${{ inputs.target }}
+        run: cargo test --no-fail-fast --features ignore-hardware-tests --target=${{ inputs.target }}
 
       - name: Build | build tests (all features)
         if: ${{ inputs.disable_extra_builds == false }}
@@ -112,4 +110,5 @@ jobs:
 
       - name: Build | run tests (all features)
         if: ${{ inputs.disable_tests == false }}
+        # Enabling all features includes ignoring hardware tests.
         run: cargo test --no-fail-fast --all-features --target=${{ inputs.target }}
